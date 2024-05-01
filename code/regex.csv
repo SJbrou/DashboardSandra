@@ -1,0 +1,30 @@
+regex
+\\s*/\\s*\\d+\\.\\d+\\s*/\\s*
+Abonnementen \d{4} - 
+Abonnementen - 
+Crossfit \d{4} - 
+CrossFit Energy - 
+ / \b\w+ \d{4}\b
+ - \b\w+ \d{4}\b
+ / DOWNGRADE
+ / UPGRADE
+ / VERLENGING
+, gesprek of PT
+Reguliere lessen - 
+Maand abonnement - 
+Crossfit - 
+BFNL - 
+  gesprek of PT
+Gesprekken - 
+Crossfit CFE - 
+Crossfit 2021 CFE - 
+ - NLG
+ - 1 maand
+ (+Hyrox, Yoga, Rumble)
+2021
+ - coach abonnement
+ - incl. next life gym
+ all-in
+ CFE
+Crossfit Energy - 
+2024 - 

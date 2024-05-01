@@ -1,0 +1,586 @@
+---
+title: "Dashboard"
+author: "Stan Brouwer"
+date: "3-3-2024"
+toc: true
+number-sections: true
+number-depth: 2
+echo: FALSE
+format:
+  html:
+    toc: true
+    output-dir: cfe
+    toc-location: left
+    embed-resources: true
+    page-layout: full
+---
+
+```{r startup, include=FALSE, echo=FALSE, message=FALSE, warning=FALSE}
+rm(list = ls()) # Clean workspace
+
+# Load required libraries
+requiredLibraries <- c("tidyr", "dplyr", "plotly", "ggplot2", "networkD3", "knitr", "lubridate")
+for (lib in requiredLibraries) {
+  if (!require(lib, character.only = TRUE)) {
+    install.packages(lib, dependencies = TRUE)
+    library(lib, character.only = TRUE)
+  }
+}
+rm(requiredLibraries, lib)
+
+# Load facturen funciton
+facturen_laden <- function() {
+  # Check for files
+  files <- list.files(path = "data", pattern = "facturen", full.names = TRUE)
+  
+  # Load the first CSV file with specified column classes
+  data <- data.frame()
+  data1 <- read.csv(files[1], sep = ";", header = TRUE, skip = 3)
+  # data2 <- read.csv(files[2], sep = ";", header = TRUE, skip = 3)
+  
+  # Loop through the remaining files, if any, and combine data frames
+  # if (length(files) > 1) {
+  #  for (i in 2:length(files)) {
+  #    data_new <- read.csv(files[i], sep = ";", header = TRUE, skip = 3)
+  #    data <- rbind(data, data_new)
+  #  }
+  #}
+  
+  data <- data1
+  #data <- rbind(data1, data2)
+  ## Verwijderen waar niet betaald is
+  data <- subset(data, Betaalstatus == "Voldaan" | Betaalstatus == "Gecrediteerd")
+  #data1 <- subset(data1, Betaalstatus == "Voldaan" | Betaalstatus == "Gecrediteerd")
+  #data2 <- subset(data2, Betaalstatus == "Voldaan" | Betaalstatus == "Gecrediteerd")
+  
+  
+  ## Data juist definieren
+  data <- data %>%
+    select(Registratienummer, Voornaam, Tussenvoegsel, Achternaam, Factuurdatum, Factuurbedrag, Besteldatum, Betaaldatum, Betaalmethode, Betaalstatus, Producttype, Productomschrijving)
+  
+  ## Factuurbedrag converteren naar numeriek, comma's en punten goed verwerken
+  data$Factuurbedrag <- as.numeric(gsub(",", ".", gsub("\\.", "", data$Factuurbedrag)))
+  
+  ## Datum naar juiste format converteren
+  data$BestelMaand <- as.Date(gsub("-", "/", data$Besteldatum), format = "%d/%m/%Y")
+  data$BetaalMaand <- as.Date(gsub("-", "/", data$Betaaldatum), format = "%d/%m/%Y")
+  data$BestelMaand <- format(data$BestelMaand, "%Y-%m")
+  data$BetaalMaand <- format(data$BetaalMaand, "%Y-%m")
+  
+  # data_new <- subset(data_new, Betaalstatus == "Voldaan" | Betaalstatus == "Gecrediteerd")
+  ## Regex
+  if (!file.exists("code/regex.csv")) {
+    regexcsv <- data.frame(
+      regex = c("Value1", "Value2")
+    )
+    write.csv(regexcsv, "code/regex.csv", sep = ";", row.names = FALSE)
+    rm(regexcsv)
+  } else {
+    patterns_to_remove <- read.csv("code/regex.csv", header = TRUE, sep=";")
+    patterns_to_remove <- patterns_to_remove$regex
+  }
+  
+  
+  data$Product <- data$Productomschrijving
+  for (pattern in patterns_to_remove) {
+    data$Product <- gsub(pattern, "", data$Product)
+  }
+  
+  
+  data <- data %>%
+    mutate(
+      Product = ifelse(grepl("1x  per week", Product), "1x per week", Product)
+    )
+  
+  rm(pattern, patterns_to_remove)
+  
+  # Categoriseren 
+  ##########################################################################################
+  ## Configuratie categorieen, producten
+  if (!file.exists("code/configuratie.csv")) {
+    configuratie <- data.frame(
+      Productnaam = unique(data$Product),
+      Categorie = rep("", length(unique(data$Product))),
+      Product = rep("", length(unique(data$Product))),
+      Maanden = rep("", length(unique(data$Product))),
+      Credits = rep("", length(unique(data$Product)))
+    )
+    write.csv2(configuratie, "code/configuratie.csv", sep = ",", row.names = FALSE)
+    rm(configuratie)
+  } else {
+    configuratiecsv <- read.csv("code/configuratie.csv", header = TRUE, sep = ";", quote = "", na.strings = "")
+  }
+  
+  data_category_list <- data.frame(
+    value = configuratiecsv$Productnaam,
+    categorie = configuratiecsv$Categorie
+  )
+  data_category_list[] <- lapply(data_category_list, function(x) ifelse(nzchar(x), x, NA))
+  data_category_list[] <- lapply(data_category_list, function(x) ifelse(!is.na(x), x, NA))
+  data_category_list <- na.omit(data_category_list)
+  
+  matching_indices <- match(data$Product, data_category_list$value)
+  
+  # Update data$categorie with corresponding values from data_category_list$categorie
+  data$categorie[!is.na(matching_indices)] <- data_category_list$categorie[matching_indices[!is.na(matching_indices)]]
+  data$categorie <- ifelse(is.na(data$categorie), as.character(data$Product), as.character(data$categorie))
+  
+  
+  # data$categorie filteren op pt en fitaid
+  
+  ##########################################################################
+  ##   Klopt er een Categorie niet? Pas hier de categorie aan obv Product ##
+  ##########################################################################
+  
+  
+  
+  data <- data %>%
+    mutate(
+      categorie = case_when(
+        grepl("personal training", categorie, ignore.case = TRUE) ~ "PT",
+        grepl("Fit[- ]?Aid", categorie, ignore.case = TRUE) ~ "Overig",
+        grepl("3x per week ", categorie, ignore.case = TRUE) ~ "3x per week",
+        grepl("4x per week ", categorie, ignore.case = TRUE) ~ "4x per week",
+        grepl("1 PT per week\nt/m 31-12-2024", categorie, ignore.case = TRUE) ~ "PT",
+        grepl("Trajecten - beginnerscursus ", categorie, ignore.case = TRUE) ~ "Traject",
+        grepl("Trajecten - beginnerscursus", categorie, ignore.case = TRUE) ~ "Traject",
+        grepl("Traject - Lose Weight stay fit", categorie, ignore.case = TRUE) ~ "Traject",
+        grepl("Traject - Creeer balans", categorie, ignore.case = TRUE) ~ "Traject",
+        grepl("Unlimited- April \ntot 19 april", categorie, ignore.case = TRUE) ~ "Energy Fit",
+        grepl("Unlimited\nMaart", categorie, ignore.case = TRUE) ~ "Energy Fit",
+        grepl("Module - Creeer balans ", categorie, ignore.case = TRUE) ~ "Traject",
+        grepl("Module - Creëer de kracht van je leven", categorie, ignore.case = TRUE) ~ "Traject",
+        
+        TRUE ~ as.character(categorie)
+      )
+    )
+  
+  data <- data %>%
+    mutate(
+      categorie = ifelse(Product == "Ski marathon - Evenement", "Event", 
+                         ifelse(Product == "Traject - Beginnerscursus: \"Wat is conditie?\"", "Traject", 
+                                ifelse(Product == "Traject - Beginnerscursus 8 januari", "Traject", 
+                                       ifelse(Product == "Module - Creeer balans", "Traject", 
+                                              ifelse(Product == "Trajecten - Barbell en dumbell strength", "Traject",
+                                                     ifelse(Product == "Module - Creeer de kracht van je leven", "Traject" ,categorie))
+                                       )
+                                )
+                         )
+      )
+    )
+  
+  
+  ## Product aanpassen voor Rittenkaarten en Trajecten
+  rm(data_category_list)  # Remove previous data_category_list if exists
+  data_category_list <- data.frame(
+    value = configuratiecsv$Productnaam,
+    productnaam = configuratiecsv$Product
+  )
+  
+  data_category_list <- data.frame(
+    value = configuratiecsv$Productnaam,
+    prodnaam = configuratiecsv$Product
+  )
+  data_category_list[] <- lapply(data_category_list, function(x) ifelse(nzchar(x), x, NA))
+  data_category_list[] <- lapply(data_category_list, function(x) ifelse(!is.na(x), x, NA))
+  data_category_list <- na.omit(data_category_list)
+  
+  matching_indices <- match(data$Product, data_category_list$value)
+  
+  # Update data$categorie with corresponding values from data_category_list$categorie
+  data$Product[!is.na(matching_indices)] <- data_category_list$prodnaam[matching_indices[!is.na(matching_indices)]]
+  
+  ### Trajecten
+  data$Product[data$Product == "Trajecten - beginnerscursus"] <- "Beginnerscursus"
+  data$Product[data$Product == "Traject - Lose weight stay fit"] <- "Lose weight"
+  data$Product[data$Product == "Module - Creëer de kracht van je leven"] <- "Kracht van je leven"
+  data$Product[data$Product == "Trajecten - beginnerscursus"] <- "Beginnerscursus"
+  
+  return(data)
+}
+
+data <- facturen_laden()
+ruwdata <- data
+
+
+```
+
+
+
+```{r include=FALSE, echo=FALSE, message=FALSE, warning=FALSE}
+# Include the functions
+source("code/aantallen.R")
+
+```
+
+
+## Aantallen
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+## Verwijderen "UPGRADE" uit de productomschrijving
+data <- data %>%
+   filter(!grepl("UPGRADE", Productomschrijving))
+
+
+aantal <- data %>%
+    filter(Producttype == "Abonnement" & categorie != "supplementen") %>%
+    group_by(categorie, BestelMaand) %>%
+    summarise(OrdersCount = n())
+
+# Plot
+plot <- plot_ly(aantal, x = ~BestelMaand, y = ~OrdersCount, type = "bar",
+                hoverinfo = "text", color = ~categorie, colors = "Set1", marker = list(line = list(width = 1)),
+                text = ~paste("Abonnement", ": ", OrdersCount), textposition = "inside") %>%
+    layout(xaxis = list(title = "Maand"),
+           yaxis = list(title = "Aantal"),
+           title = "Aantal abonnementen ex. rittenkaarten",
+           barmode = 'stack')
+
+plot
+
+
+```
+
+\
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+## Aantallen per maand per categorie line plot
+aantal <- data %>%
+  filter(data$Producttype == "Abonnement") %>%
+  group_by(BestelMaand, categorie) %>%
+  summarise(OrdersCount = n(), .groups = 'drop') %>%
+  pivot_wider(names_from = BestelMaand, values_from = OrdersCount, values_fill = 0)
+# Convert omzet to long format for plotting
+aantal_long <- pivot_longer(aantal, cols = -categorie, names_to = "BestelMaand", values_to = "OrdersCount")
+aantal_long <- aantal_long %>%
+  filter(!(BestelMaand %in% c("2022-11", "2022-12")))
+# Plot
+plot <- plot_ly(aantal_long, x = ~BestelMaand, y = ~OrdersCount, type = "scatter", mode = "lines+markers",
+                color = ~categorie, colors = "Set1", text = ~paste(categorie, ": ", OrdersCount),
+                hoverinfo = "text") %>%
+  layout(xaxis = list(title = "Maand"),
+         yaxis = list(title = "Aantal"),
+         title = "Trends per abonnement")
+         
+plot
+
+
+
+```
+
+### Rittenkaarten
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+
+  aantal <- data %>%
+    filter(Producttype == "Rittenkaart") %>%  # Filter data where Producttype is "Rittenkaart"
+    group_by(BestelMaand, Product) %>%
+    summarise(OrdersCount = n(), .groups = 'drop') %>%
+    pivot_wider(names_from = BestelMaand, values_from = OrdersCount, values_fill = 0)
+  
+  # Convert aantal to long format for plotting
+  aantal_long <- pivot_longer(aantal, cols = -Product, names_to = "BestelMaand", values_to = "OrdersCount")
+  aantal_long <- aantal_long %>%
+    filter(!(BestelMaand %in% c("2022-11", "2022-12")))
+  
+  # Plot
+  plot <- plot_ly(aantal_long, x = ~BestelMaand, y = ~OrdersCount, type = "bar",
+                  hoverinfo = "text", color = ~Product, colors = "Set1", marker = list(line = list(width = 1)),
+                  text = ~paste(Product, ": ", OrdersCount), textposition = "inside") %>%
+    layout(xaxis = list(title = "Maand"),
+           yaxis = list(title = "Aantal"),
+           title = "Aantal ritenkaarten",
+           barmode = 'stack')
+  
+plot
+```
+
+
+
+### Trajecten
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+  aantal <- data %>%
+    filter(categorie == "Traject") %>%  # Filter data where categorie is "Traject"
+    group_by(BestelMaand, Product) %>%
+    summarise(OrdersCount = n(), .groups = 'drop') %>%
+    pivot_wider(names_from = BestelMaand, values_from = OrdersCount, values_fill = 0) %>%
+    pivot_longer(cols = -Product, names_to = "BestelMaand", values_to = "OrdersCount") %>%
+    filter(!(BestelMaand %in% c("2022-11", "2022-12")))
+  
+  # Plot
+  plot <- plot_ly(aantal, x = ~BestelMaand, y = ~OrdersCount, type = "bar",
+                  hoverinfo = "text", color = ~Product, colors = "Set1", marker = list(line = list(width = 1)),
+                  text = ~paste(Product, ": ", OrdersCount), textposition = "inside") %>%
+    layout(xaxis = list(title = "Maand"),
+           yaxis = list(title = "Aantal"),
+           barmode = 'stack',
+           title = "Aantal trajecten")  # Adjust y position to move the legend to the top
+  plot
+```
+
+## Conversie trajecten
+
+```{r conversie-trajecten, echo=FALSE, message=FALSE, warning=FALSE}
+# Assuming your dataframe is named 'data'
+
+# Sort the data by Registratienummer and BestelMaand
+data_conversie <- data %>% arrange(Registratienummer, BestelMaand, Voornaam)
+
+# Create a new column 'NextPurchase' with the next purchase for each person
+data_conversie <- data_conversie %>%
+  group_by(Registratienummer) %>%
+  mutate(
+    NextPurchase = lead(ifelse(Producttype %in% c("Abonnement", "Rittenkaart"), categorie, NA), 
+                         order_by = BestelMaand, default = NA)
+  )
+
+# Filter for rows where the current purchase is "Traject"
+traject_data <- data_conversie[data_conversie$categorie == "Traject", ]
+
+
+####### BELANGRIJK #######
+# Verwijderen van de 2 meest recente maand, zodat de mensen met een huidig traject, die nog niks nieuws hebben aangeschaft, niet meetellen als NoPurchase
+# Dit is suboptimaal, later de andere maneer
+######## TO-DO, todo, to do, To-do
+
+# Find the two most recent months
+most_recent_months <- tail(unique(sort(traject_data$BestelMaand)), 2)
+
+# Filter out instances with the two most recent months
+traject_data <- traject_data[!traject_data$BestelMaand %in% most_recent_months, ]
+
+# Print or use filtered_traject_data as needed
+
+```
+
+<details close>
+
+<summary>toggle tabel</summary>
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+library(knitr)
+selected_columns <- traject_data[, c("Voornaam", "BestelMaand", "Product", "NextPurchase")]
+kable(selected_columns)
+```
+
+</details>
+
+
+Wat gaan mensen doen na een traject?
+
+```{r}
+# Load required packages
+library(networkD3)
+library(dplyr)
+
+# Replace NA values in NextPurchase with a common identifier
+traject_data$NextPurchase[is.na(traject_data$NextPurchase)] <- "NoPurchase"
+
+# Create a data frame for the Sankey diagram
+sankey_data <- traject_data %>%
+  filter(!is.na(NextPurchase)) %>%
+  group_by(Product, NextPurchase) %>%
+  summarise(Count = n(), .groups = "drop") %>%
+  ungroup()
+
+# Create a list of nodes and links
+nodes <- data.frame(name = unique(c(sankey_data$Product, sankey_data$NextPurchase)))
+nodes$label <- paste(nodes$name, "\n", nodes$TotalCount)  # Customize labels with values
+
+# Calculate total amount for each node
+total_amount <- traject_data %>%
+  group_by(Product) %>%
+  summarise(TotalCount = n(), .groups = "drop")
+
+# Merge total amount with nodes
+nodes <- merge(nodes, total_amount, by.x = "name", by.y = "Product", all.x = TRUE)
+
+# Create links
+links <- data.frame(source = match(sankey_data$Product, nodes$name) - 1,
+                    target = match(sankey_data$NextPurchase, nodes$name) - 1,
+                    value = sankey_data$Count)
+
+# Create a Sankey diagram
+sankey <- sankeyNetwork(
+  Links = links, Nodes = nodes, Source = "source", Target = "target", Value = "value",
+  units = "TWh", fontSize = 12, nodeWidth = 30
+)
+
+# Display the Sankey diagram
+sankey
+
+
+```
+
+<details>
+
+<summary>Afwegingen</summary>
+
+Ik bereken het eerst volgende product dat aangeschaft is en een abonnenemt of rittenkaart is. Sommige trajecten zijn nog niet afgelopen, en hebben dus geen volgend traject aangeschaft (NoPurchase). De aanname die ik doe is dat een traject twee maanden duurt. Als leden de afgelopen twee maanden een traject zijn gestart, en geen volgend product hebben aangeschaft, tel ik ze niet als "NoPurchase".
+
+</details>
+
+\
+
+## Omzet
+
+```{r omzet-abo, echo=FALSE, message=FALSE, warning=FALSE}
+## Data is exclusief de "UPGRADE" abonnementen. Alle data inclusief "UPGRADE" laden:
+rm(data)
+data <- ruwdata
+
+
+# Create the omzet dataframe with total revenue per month and category for "Abonnement"
+revenue <- data %>%
+  mutate(categorie = ifelse(Producttype == "Rittenkaart", "Rittenkaart", categorie)) %>%
+  filter((Producttype == "Abonnement" & !(categorie %in% "Supplementen") & categorie != "1x per week" & categorie != "Fitness" & categorie != "Overig") |
+         Producttype == "Rittenkaart") %>%
+  
+  group_by(BestelMaand, categorie) %>%
+  summarise(TotalRevenue = sum(Factuurbedrag)) %>%
+  pivot_wider(names_from = BestelMaand, values_from = TotalRevenue, values_fill = 0)
+
+# Convert revenue to long format for plotting
+revenue_long <- pivot_longer(revenue, cols = -categorie, names_to = "BestelMaand", values_to = "TotalRevenue")
+revenue_long <- revenue_long %>%
+  filter(!(BestelMaand %in% c("2022-11", "2022-12")))
+
+# Create an interactive line graph for total revenue
+line_plot_revenue <- plot_ly(revenue_long, x = ~BestelMaand, y = ~TotalRevenue, type = "scatter", mode = "lines+markers",
+                              color = ~categorie, colors = "Set1", text = ~paste(categorie, ": ", round(TotalRevenue, 2)),
+                              hoverinfo = "text") %>%
+  layout(title = "Ontwikkeling omzet",
+         xaxis = list(title = "Maand"),
+         yaxis = list(title = "Totale omzet"))
+
+# Create an interactive stacked bar graph for total revenue
+bar_plot_revenue <- plot_ly(revenue_long, x = ~BestelMaand, y = ~TotalRevenue, type = "bar",
+                             hoverinfo = "text", color = ~categorie, colors = "Set1", marker = list(line = list(width = 1)),
+                             text = ~paste(categorie, ": ", round(TotalRevenue, 2)), textposition = "inside") %>%
+  layout(title = "Omzet",
+         xaxis = list(title = "Maand"),
+         yaxis = list(title = "Totale omzet"),
+         barmode = 'stack')
+
+
+```
+
+::: {.test style="font-size: 20px; font-weight: bold;"}
+```{r, echo=FALSE}
+sum_last_column <- sum(revenue[, ncol(revenue)])
+
+# calc month
+#max_date <- max(data$BestelMaand)
+#date_object <- as.Date(paste(max_date, "01", sep = "-"))
+#month_spelled <- format(date_object, "%B")
+month_spelled <- ""
+paste0('Omzet sportbit afgelopen maand (', month_spelled, ') €', sum_last_column)
+rm(sum_last_column)
+```
+:::
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+bar_plot_revenue
+```
+
+\
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+line_plot_revenue
+```
+
+\
+
+### Rittenkaarten
+```{r omzet-rittenkaarten, echo=FALSE, message=FALSE, warning=FALSE}
+# Create the omzet dataframe with total revenue per month and category for "Abonnement"
+revenue_r <- data %>%
+  filter(Producttype == "Rittenkaart") %>%
+  group_by(BestelMaand, categorie) %>%
+  summarise(TotalRevenue = sum(Factuurbedrag)) %>%
+  pivot_wider(names_from = BestelMaand, values_from = TotalRevenue, values_fill = 0)
+
+# Convert revenue to long format for plotting
+revenue_r_long <- pivot_longer(revenue_r, cols = -categorie, names_to = "BestelMaand", values_to = "TotalRevenue")
+revenue_r_long <- revenue_r_long %>%
+  filter(!(BestelMaand %in% c("2022-11", "2022-12")))
+
+# Create an interactive line graph for total revenue
+line_plot_revenue_r <- plot_ly(revenue_r_long, x = ~BestelMaand, y = ~TotalRevenue, type = "scatter", mode = "lines+markers",
+                              color = ~categorie, colors = "Set1", text = ~paste(categorie, ": ", round(TotalRevenue, 2)),
+                              hoverinfo = "text") %>%
+  layout(title = "Ontwikkeling omzet rittenkaarten",
+         xaxis = list(title = "Month"),
+         yaxis = list(title = "Total Revenue"))
+
+# Create an interactive stacked bar graph for total revenue
+bar_plot_revenue_r <- plot_ly(revenue_r_long, x = ~BestelMaand, y = ~TotalRevenue, type = "bar",
+                             hoverinfo = "text", color = ~categorie, colors = "Set1", marker = list(line = list(width = 1)),
+                             text = ~paste(categorie, ": ", round(TotalRevenue, 2)), textposition = "inside") %>%
+  layout(title = "Ontwikkeling omzet rittenkaarten",
+         xaxis = list(title = "Maand"),
+         yaxis = list(title = "Omzet"),
+         barmode = 'stack')
+```
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+bar_plot_revenue_r
+```
+
+\
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+line_plot_revenue_r
+```
+
+\
+
+### Trajecten
+
+```{r trajecten, echo=FALSE, message=FALSE, warning=FALSE}
+# Opbouw trajecten
+
+# Filter the data for Trajecten
+trajecten_data <- data[data$categorie == "Traject", ]
+
+# Create a new grouping variable
+trajecten_data$GroupedProduct <- ifelse(grepl("Traject - Beginnerscursus", trajecten_data$Product) |
+                                          grepl("Traject - Beginnerscursus: \"Wat is conditie?\"", trajecten_data$Product) |
+                                          grepl("Traject - Beginnerscursus 8 januari", trajecten_data$Product),
+                                        "Beginnerscursus",
+                                        ifelse(grepl("Traject - Lose Weight & Stay Fit", trajecten_data$Product) |
+                                                 grepl("Traject - Lose weight, stay Fit", trajecten_data$Product) |
+                                                 grepl("Module - Lose Weight stay fit", trajecten_data$Product),
+                                               "Lose Weight", ####
+                                               ifelse(grepl("Traject - Barbell & Dumbell Strength", trajecten_data$Product) |
+                                                        grepl("Trajecten - Barbell en dumbell strength", trajecten_data$Product),
+                                                      "BarbellDumbbell", ####
+                                                      ifelse(trajecten_data$Product == "Module - Creëer de kracht van je leven",
+                                                             "KrachtvanjeLeven", ###
+                                                             ifelse(trajecten_data$Product == "Module - Creeer balans",
+                                                                    "Creeer balans", ###
+                                                                    ifelse(trajecten_data$Product == "Iron man - Traject",
+                                                                           "Iron man", ###
+                                                                           trajecten_data$Product))))))
+
+# Create a ggplot object for the bar graph
+traject_r <- ggplot(trajecten_data, aes(x = BestelMaand, y = Factuurbedrag, fill = GroupedProduct)) +
+  geom_bar(position = "stack", color = "black", stat = "identity") +
+  labs(title = "Omzet van de trajecten",
+       x = "Maand",
+       y = "Omzet") +
+  theme_minimal()
+traject_r <- ggplotly(traject_r)
+```
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+traject_r
+```
+
+\
+
+
